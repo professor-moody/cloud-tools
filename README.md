@@ -13,17 +13,17 @@ ROADtools - Azure AD exploration and exploitation framework
 Stormspotter - Azure Red Team tool for graph visualization
 MicroBurst - Azure security assessment scripts collection
 
-## Multi-Cloud Security
+Multi-Cloud Security
 
 ScoutSuite - Multi-cloud security auditing tool (AWS, Azure, GCP, Alibaba, Oracle)
 CloudBrute - Cloud enumeration tool for finding company infrastructure
 
-## AWS Security
+AWS Security
 
 cloudsplaining - AWS IAM security assessment and policy analysis
 weirdAAL - AWS Attack Library for offensive and defensive security
 
-# GCP Security
+GCP Security
 
 GCPBucketBrute - Google Cloud Storage bucket enumeration tool
 
