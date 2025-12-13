@@ -1,0 +1,34 @@
+name: Update JS Bundle and Example Report
+
+on:
+  schedule:
+  # Run on the first day of the month
+    - cron:  '0 0 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@1af3b93b6815bc44a9784bd300feb67ff0d1eeb3  # v6.0.0
+      - uses: astral-sh/setup-uv@1e862dfacbd1d6d858c55d9b792c756523627244  # v7.1.4
+        with:
+          activate-environment: true
+      - run: uv sync --frozen
+
+      - name: Update the JavaScript bundle
+        run: just build-js
+      - name: Generate the updated reports
+        run: just generate-report
+      - name: Run NPM unit tests for sanity checks
+        run: just test-js
+
+      - name: PR if files were updated
+        uses: peter-evans/create-pull-request@84ae59a2cdc2258d6fa0732dd66352dddae2a412 # v7.0.9
+        with:
+          commit-message: Update JS Bundle and example reports
+          title: 'Updates JS Bundle and example reports'
+          body: This is an automated PR created to update the JS Bundle and the example reports.
