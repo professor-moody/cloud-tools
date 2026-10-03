@@ -1,0 +1,28 @@
+# SDK
+/* @prowler-cloud/engineering
+/prowler/ @prowler-cloud/engineering
+/tests/ @prowler-cloud/engineering
+/dashboard/ @prowler-cloud/engineering
+/docs/ @prowler-cloud/engineering
+/examples/ @prowler-cloud/engineering
+/util/ @prowler-cloud/engineering
+/contrib/ @prowler-cloud/engineering
+/permissions/ @prowler-cloud/engineering
+/codecov.yml @prowler-cloud/engineering
+
+# API
+/api/ @prowler-cloud/engineering
+
+# UI
+/ui/ @prowler-cloud/engineering
+
+# AI
+/mcp_server/ @prowler-cloud/engineering
+
+# Platform
+/.github/ @prowler-cloud/platform
+/Makefile @prowler-cloud/platform
+/kubernetes/ @prowler-cloud/platform
+**/Dockerfile* @prowler-cloud/platform
+**/docker-compose*.yml @prowler-cloud/platform
+**/docker-compose*.yaml @prowler-cloud/platform
