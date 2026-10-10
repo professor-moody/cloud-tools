@@ -1,0 +1,489 @@
+"""Shared API client utilities for Prowler tools."""
+
+import asyncio
+from datetime import datetime, timedelta
+from enum import StrEnum
+from typing import Any
+from urllib.parse import urlparse
+
+import httpx
+from fastmcp.exceptions import ToolError
+
+from prowler_mcp_server import __version__
+from prowler_mcp_server.lib.errors import (
+    InvalidArgument,
+    ProwlerAPIError,
+    ProwlerAPIInvalidResponse,
+    ProwlerAPIUnreachable,
+    jsonapi_detail,
+)
+from prowler_mcp_server.lib.logger import logger
+from prowler_mcp_server.prowler_app.utils.auth import ProwlerAppAuth
+
+ALLOWED_EXTERNAL_DOMAINS: frozenset[str] = frozenset({"raw.githubusercontent.com"})
+
+
+class HTTPMethod(StrEnum):
+    """HTTP methods enum."""
+
+    GET = "GET"
+    POST = "POST"
+    PATCH = "PATCH"
+    DELETE = "DELETE"
+
+
+class SingletonMeta(type):
+    """Metaclass that implements the Singleton pattern.
+
+    This metaclass ensures that only one instance of a class exists.
+    All calls to the constructor return the same instance.
+    """
+
+    _instances: dict[type, Any] = {}
+
+    def __call__(cls, *args, **kwargs):
+        """Control instance creation to ensure singleton behavior."""
+        if cls not in cls._instances:
+            instance = super().__call__(*args, **kwargs)
+            cls._instances[cls] = instance
+        return cls._instances[cls]
+
+
+class ProwlerAPIClient(metaclass=SingletonMeta):
+    """Shared API client with smart defaults and helper methods.
+
+    This class uses the Singleton pattern via metaclass to ensure only one
+    instance exists across the application, reducing initialization overhead
+    and enabling HTTP connection pooling.
+    """
+
+    def __init__(self) -> None:
+        """Initialize the API client (only called once due to singleton pattern)."""
+        self.auth_manager: ProwlerAppAuth = ProwlerAppAuth()
+        self.client: httpx.AsyncClient = httpx.AsyncClient(timeout=30.0)
+
+    async def _make_request(
+        self,
+        method: HTTPMethod,
+        path: str,
+        params: dict[str, any] | None = None,
+        json_data: dict[str, any] | None = None,
+    ) -> dict[str, any]:
+        """Make authenticated API request.
+
+        Args:
+            method: HTTP method (GET, POST, PATCH, DELETE)
+            path: API endpoint path
+            params: Optional query parameters
+            json_data: Optional JSON body data
+
+        Returns:
+            API response as dictionary
+
+        Raises:
+            ProwlerAPIError: If the API answered with an error status
+            ProwlerAPIUnreachable: If the request got no answer
+            ProwlerAPIInvalidResponse: If the answer was not readable as JSON
+        """
+        try:
+            token: str = await self.auth_manager.get_valid_token()
+            url: str = f"{self.auth_manager.base_url}{path}"
+            headers: dict[str, str] = self.auth_manager.get_headers(token)
+
+            response: httpx.Response = await self.client.request(
+                method=method.value,
+                url=url,
+                headers=headers,
+                params=params,
+                json=json_data,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as e:
+            status: int = e.response.status_code
+            # `jsonapi_detail` returns nothing for a 5xx, so a server error never
+            # puts upstream text into the exception message either.
+            detail: str | None = jsonapi_detail(e.response)
+            # The full body goes to the log and nowhere else. A body that is not
+            # JSON:API is upstream text of unknown provenance, and the exception
+            # message is read by a model.
+            logger.error(
+                "HTTP error during %s %s: %s %s",
+                method.value,
+                path,
+                status,
+                (e.response.text or "")[:500],
+            )
+
+            message = f"API request failed: {status}"
+            if detail:
+                message = f"{message} - {detail}"
+
+            # Carried on the exception, not into the message: a tool needs the
+            # body to tell an answer with an error status -- a 404 holding the
+            # empty result of a query that matched nothing -- apart from a
+            # request that actually failed.
+            try:
+                body = e.response.json()
+            except ValueError:
+                body = None
+
+            raise ProwlerAPIError(
+                message,
+                status,
+                detail=detail,
+                payload=body if isinstance(body, dict) else None,
+            ) from e
+        except httpx.RequestError as e:
+            # No answer came back, so whether the request was applied is unknown.
+            logger.error(f"Error during {method.value} {path}: {e}")
+            raise ProwlerAPIUnreachable(
+                f"{method.value} {path} got no answer: {type(e).__name__}"
+            ) from e
+        except Exception as e:
+            logger.error(f"Error during {method.value} {path}: {e}")
+            raise
+
+        if not response.content:
+            return {
+                "success": True,
+                "status_code": response.status_code,
+            }
+
+        # Parsed outside the block above so that a body we cannot read is told
+        # apart from an argument a tool could not parse: both are a
+        # `JSONDecodeError`, and only the second one is the caller's doing.
+        try:
+            return response.json()
+        except ValueError as e:
+            logger.error(
+                "Unreadable response body during %s %s: %s %s",
+                method.value,
+                path,
+                response.status_code,
+                (response.text or "")[:500],
+            )
+            raise ProwlerAPIInvalidResponse(
+                f"{method.value} {path} answered {response.status_code} with a "
+                "body that is not JSON"
+            ) from e
+
+    async def get(
+        self, path: str, params: dict[str, any] | None = None
+    ) -> dict[str, any]:
+        """Make GET request.
+
+        Args:
+            path: API endpoint path
+            params: Optional query parameters
+
+        Returns:
+            API response as dictionary
+
+        Raises:
+            Exception: If API request fails
+        """
+        return await self._make_request(HTTPMethod.GET, path, params=params)
+
+    async def post(
+        self,
+        path: str,
+        params: dict[str, any] | None = None,
+        json_data: dict[str, any] | None = None,
+    ) -> dict[str, any]:
+        """Make POST request.
+
+        Args:
+            path: API endpoint path
+            params: Optional query parameters
+            json_data: Optional JSON body data
+
+        Returns:
+            API response as dictionary
+
+        Raises:
+            Exception: If API request fails
+        """
+        return await self._make_request(
+            HTTPMethod.POST, path, params=params, json_data=json_data
+        )
+
+    async def patch(
+        self,
+        path: str,
+        params: dict[str, any] | None = None,
+        json_data: dict[str, any] | None = None,
+    ) -> dict[str, any]:
+        """Make PATCH request.
+
+        Args:
+            path: API endpoint path
+            params: Optional query parameters
+            json_data: Optional JSON body data
+
+        Returns:
+            API response as dictionary
+
+        Raises:
+            Exception: If API request fails
+        """
+        return await self._make_request(
+            HTTPMethod.PATCH, path, params=params, json_data=json_data
+        )
+
+    async def delete(
+        self,
+        path: str,
+        params: dict[str, any] | None = None,
+        json_data: dict[str, any] | None = None,
+    ) -> dict[str, any]:
+        """Make DELETE request.
+
+        Args:
+            path: API endpoint path
+            params: Optional query parameters
+            json_data: Optional JSON body data. Some JSON:API relationship
+                endpoints (e.g. ``/users/{id}/relationships/roles``) accept a
+                body listing the specific members to remove.
+
+        Returns:
+            API response as dictionary
+
+        Raises:
+            Exception: If API request fails
+        """
+        return await self._make_request(
+            HTTPMethod.DELETE, path, params=params, json_data=json_data
+        )
+
+    async def fetch_external_url(self, url: str) -> str:
+        """Fetch content from an allowed external URL (unauthenticated).
+
+        Uses the existing singleton httpx client with a domain allowlist
+        to prevent SSRF attacks.
+
+        Args:
+            url: The external URL to fetch content from
+
+        Returns:
+            Raw text content from the URL
+
+        Raises:
+            InvalidArgument: If the URL scheme or domain is not allowed
+            ToolError: If the fetch failed
+        """
+        parsed = urlparse(url)
+        if parsed.scheme != "https":
+            raise InvalidArgument(f"Only HTTPS URLs are allowed, got '{parsed.scheme}'")
+        if parsed.hostname not in ALLOWED_EXTERNAL_DOMAINS:
+            raise InvalidArgument(
+                f"Domain '{parsed.hostname}' is not allowed. "
+                f"Allowed domains: {', '.join(sorted(ALLOWED_EXTERNAL_DOMAINS))}"
+            )
+
+        try:
+            response = await self.client.get(
+                url,
+                headers={"User-Agent": f"prowler-mcp-server/{__version__}"},
+            )
+            response.raise_for_status()
+            return response.text
+        except httpx.HTTPStatusError as e:
+            # The status is ours to report; the body is upstream text and stays
+            # in the log. No `from` clause: this sentence is the final word.
+            logger.error(
+                "HTTP error fetching external URL %s: %s %s",
+                url,
+                e.response.status_code,
+                (e.response.text or "")[:500],
+            )
+            raise ToolError(
+                f"Fetching {url} failed with status {e.response.status_code}."
+            )
+        except httpx.RequestError as e:
+            logger.error(f"Error fetching external URL {url}: {e}")
+            raise ToolError(f"Fetching {url} got no answer: {type(e).__name__}.")
+
+    async def poll_task_until_complete(
+        self,
+        task_id: str,
+        timeout: int = 60,
+        poll_interval: float = 1.0,
+    ) -> dict[str, any]:
+        """Poll a task until it reaches a terminal state.
+
+        This method polls the task endpoint at regular intervals until the task
+        completes, fails, or times out. It's designed for async operations like
+        provider connection tests and deletions that return task IDs.
+
+        Args:
+            task_id: The UUID of the task to poll (UUID object or string)
+            timeout: Maximum time to wait in seconds (default: 60)
+            poll_interval: Time between polls in seconds (default: 1.0)
+
+        Returns:
+            The complete task response when terminal state is reached
+
+        Raises:
+            ToolError: If the task fails, is cancelled, or the timeout is exceeded
+        """
+        terminal_states = {"completed", "failed", "cancelled"}
+        start_time = asyncio.get_event_loop().time()
+        max_time = start_time + timeout
+
+        logger.info(
+            f"Polling task {task_id} (timeout: {timeout}s, interval: {poll_interval}s)"
+        )
+
+        while True:
+            # Check if we've exceeded the timeout
+            current_time = asyncio.get_event_loop().time()
+            if current_time >= max_time:
+                raise ToolError(
+                    f"Task {task_id} polling timed out after {timeout} seconds. "
+                    f"The task may still be running. Try increasing the timeout or check task status manually."
+                )
+
+            # Fetch current task state
+            response = await self.get(f"/tasks/{task_id}")
+            task_data = response.get("data", {})
+            task_attrs = task_data.get("attributes", {})
+            state = task_attrs.get("state")
+
+            logger.debug(f"Task {task_id} state: {state}")
+
+            # Check if we've reached a terminal state
+            if state in terminal_states:
+                if state == "completed":
+                    logger.info(f"Task {task_id} completed successfully")
+                    return response
+                elif state == "failed":
+                    # The task's own failure text is an upstream body: a celery
+                    # traceback, a provider message. Log it, never relay it.
+                    logger.error(
+                        f"Task {task_id} failed: {task_attrs.get('error', 'no error reported')}"
+                    )
+                    raise ToolError(f"Task {task_id} failed.")
+                elif state == "cancelled":
+                    raise ToolError(f"Task {task_id} was cancelled")
+
+            # Wait before next poll
+            await asyncio.sleep(poll_interval)
+
+    def _validate_date_format(self, date_str: str, param_name: str) -> datetime:
+        """Validate date string format.
+
+        Args:
+            date_str: Date string to validate
+            param_name: Parameter name for error messages
+
+        Returns:
+            Parsed datetime object
+
+        Raises:
+            InvalidArgument: If date format is invalid
+        """
+        try:
+            return datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            raise InvalidArgument(
+                f"Invalid date format for {param_name}. Expected YYYY-MM-DD (e.g., '2025-01-15'), got '{date_str}'. "
+                f"Full date required - partial dates like '2025' or '2025-01' are not accepted."
+            )
+
+    def validate_page_size(self, page_size: int) -> None:
+        """Validate page size parameter.
+
+        Args:
+            page_size: Page size to validate
+
+        Raises:
+            InvalidArgument: If page size is out of valid range (1-1000)
+        """
+        if page_size < 1 or page_size > 1000:
+            raise InvalidArgument(
+                f"Invalid page_size: {page_size}. Must be between 1 and 1000 (inclusive)."
+            )
+
+    def normalize_date_range(
+        self, date_from: str | None, date_to: str | None, max_days: int = 2
+    ) -> tuple[str, str] | None:
+        """Normalize and validate date range, auto-completing missing boundary.
+
+        The Prowler API has a 2-day limit for historical queries. This helper:
+        1. Returns None if no dates provided (signals: use latest/default endpoint)
+        2. Auto-completes missing boundary to maintain 2-day window
+        3. Validates the range doesn't exceed max_days
+
+        Args:
+            date_from: Start date (YYYY-MM-DD format) or None
+            date_to: End date (YYYY-MM-DD format) or None
+            max_days: Maximum allowed days between dates (default: 2)
+
+        Returns:
+            None if no dates provided, otherwise tuple of (date_from, date_to) as strings
+
+        Raises:
+            InvalidArgument: If date range exceeds max_days or date format is invalid
+        """
+        if not date_from and not date_to:
+            return None
+
+        # Parse and validate provided dates
+        from_date: datetime | None = (
+            self._validate_date_format(date_from, "date_from") if date_from else None
+        )
+        to_date: datetime | None = (
+            self._validate_date_format(date_to, "date_to") if date_to else None
+        )
+
+        # Auto-complete missing boundary to maintain max_days window
+        if from_date and not to_date:
+            to_date = from_date + timedelta(days=max_days - 1)
+        elif to_date and not from_date:
+            from_date = to_date - timedelta(days=max_days - 1)
+
+        # Validate that date_from is before or equal to date_to
+        if from_date > to_date:
+            raise InvalidArgument(
+                f"Invalid date range: date_from must be before or equal to date_to. "
+                f"Got date_from='{from_date.date()}' and date_to='{to_date.date()}'. "
+                f"Please swap the dates or use the correct order."
+            )
+
+        # Validate range doesn't exceed max_days
+        delta: int = (to_date - from_date).days + 1
+        if delta > max_days:
+            raise InvalidArgument(
+                f"Date range cannot exceed {max_days} days. "
+                f"Requested range: {from_date.date()} to {to_date.date()} ({delta} days)"
+            )
+
+        return from_date.strftime("%Y-%m-%d"), to_date.strftime("%Y-%m-%d")
+
+    def build_filter_params(
+        self, params: dict[str, any], exclude_none: bool = True
+    ) -> dict[str, any]:
+        """Build filter parameters for API, converting types to API-compatible formats.
+
+        Args:
+            params: Dictionary of parameters
+            exclude_none: If True, exclude None values from result
+
+        Returns:
+            Cleaned parameter dictionary ready for API
+        """
+        result: dict[str, any] = {}
+        for key, value in params.items():
+            if value is None and exclude_none:
+                continue
+
+            # Convert boolean values to lowercase strings for API compatibility
+            if isinstance(value, bool):
+                result[key] = str(value).lower()
+            # Convert lists/arrays to comma-separated strings
+            elif isinstance(value, (list, tuple)):
+                result[key] = ",".join(str(v) for v in value)
+            else:
+                result[key] = value
+
+        return result
