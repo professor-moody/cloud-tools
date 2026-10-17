@@ -1,0 +1,473 @@
+---
+title: 'Import Findings'
+sidebarTitle: 'Import Findings'
+description: 'Upload OCSF scan results to Prowler Cloud from the UI, the CLI or the API'
+---
+
+import { VersionBadge } from "/snippets/version-badge.mdx"
+import { SubscriptionBanner } from "/snippets/subscription-banner.mdx"
+
+<VersionBadge version="5.19.0" />
+
+Findings Ingestion enables uploading OCSF (Open Cybersecurity Schema Framework) scan results to Prowler Cloud. This feature supports importing findings from Prowler CLI output files that use the [Detection Finding](https://schema.ocsf.io/classes/detection_finding) class. Reports can be imported from the Scans page in the Prowler Cloud UI, pushed by the CLI with `--push-to-cloud`, or submitted through the API.
+
+<SubscriptionBanner />
+
+## OCSF Detection Finding Format
+
+The ingestion API accepts `.ocsf.json` files containing a JSON array of OCSF Detection Finding records. Each finding represents a security check result from Prowler.
+
+**Example Detection Finding record:**
+
+```json
+{
+  "message": "IAM Access Analyzer in account 730736567048 is not enabled.",
+  "metadata": {
+    "event_code": "accessanalyzer_enabled",
+    "product": {
+      "name": "Prowler",
+      "uid": "prowler",
+      "vendor_name": "Prowler",
+      "version": "5.17.1"
+    },
+    "profiles": [
+      "cloud",
+      "datetime"
+    ],
+    "tenant_uid": "",
+    "version": "1.5.0"
+  },
+  "severity_id": 2,
+  "severity": "Low",
+  "status": "New",
+  "status_code": "FAIL",
+  "status_detail": "IAM Access Analyzer in account 730736567048 is not enabled.",
+  "status_id": 1,
+  "unmapped": {
+    "related_url": "",
+    "categories": [
+      "identity-access",
+      "trust-boundaries"
+    ],
+    "depends_on": [],
+    "related_to": [],
+    "additional_urls": [],
+    "notes": "",
+    "scan_id": "019c2c86-3b2e-7c39-98fb-2f88643c246e"
+  },
+  "activity_name": "Create",
+  "activity_id": 1,
+  "finding_info": {
+    "created_time": 1770273520,
+    "created_time_dt": "2026-02-05T06:38:40.430622+00:00",
+    "desc": "**IAM Access Analyzer** presence and status are evaluated per account and Region. An analyzer in `ACTIVE` state indicates continuous analysis of supported resources and IAM activity to identify external, internal, and unused access.",
+    "title": "IAM Access Analyzer is enabled",
+    "types": [
+      "Software and Configuration Checks/AWS Security Best Practices",
+      "Software and Configuration Checks/Industry and Regulatory Standards/AWS Foundational Security Best Practices"
+    ],
+    "uid": "prowler-aws-accessanalyzer_enabled-730736567048-ap-northeast-1-analyzer/unknown"
+  },
+  "resources": [
+    {
+      "cloud_partition": "aws",
+      "region": "ap-northeast-1",
+      "data": {
+        "details": "",
+        "metadata": {
+          "arn": "arn:aws:accessanalyzer:ap-northeast-1:730736567048:analyzer/unknown",
+          "name": "analyzer/unknown",
+          "status": "NOT_AVAILABLE",
+          "findings": [],
+          "tags": [],
+          "type": "",
+          "region": "ap-northeast-1"
+        }
+      },
+      "group": {
+        "name": "accessanalyzer"
+      },
+      "labels": [],
+      "name": "analyzer/unknown",
+      "type": "Other",
+      "uid": "arn:aws:accessanalyzer:ap-northeast-1:730736567048:analyzer/unknown"
+    }
+  ],
+  "category_name": "Findings",
+  "class_name": "Detection Finding",
+  "cloud": {
+    "account": {
+      "name": "",
+      "type": "AWS Account",
+      "type_id": 10,
+      "uid": "730736567048",
+      "labels": []
+    },
+    "org": {
+      "name": "",
+      "uid": ""
+    },
+    "provider": "aws",
+    "region": "ap-northeast-1"
+  },
+  "remediation": {
+    "desc": "Enable **IAM Access Analyzer** across all accounts and active Regions (*or organization-wide*). Operate on least privilege: continuously review findings, remove unintended access, and trim unused permissions. Use archive rules sparingly, integrate reviews into change/CI/CD workflows, and enforce separation of duties on policy changes.",
+    "references": [
+      "https://hub.prowler.com/check/accessanalyzer_enabled"
+    ]
+  },
+  "risk_details": "Without an active analyzer, visibility into unintended public, cross-account, or risky internal access is lost. Adversaries can exploit exposed S3, snapshots, KMS keys, or permissive role trusts for data exfiltration and escalation. Unused permissions persist, enlarging the attack surface. This degrades confidentiality and integrity.",
+  "time": 1770273520,
+  "time_dt": "2026-02-05T06:38:40.430622+00:00",
+  "type_uid": 200401,
+  "type_name": "Detection Finding: Create",
+  "category_uid": 2,
+  "class_uid": 2004
+}
+```
+
+<Note>
+Only **Detection Finding** (`class_uid: 2004`) records are accepted. Other OCSF classes are not supported for ingestion.
+</Note>
+
+## Required Permissions
+
+The **Manage Ingestions** RBAC permission controls access to the ingestion endpoints. Without this permission, findings cannot be submitted from the Scans page, via the API or with `--push-to-cloud`.
+
+For more information about RBAC permissions, refer to the [Prowler Cloud RBAC documentation](/user-guide/tutorials/prowler-app-rbac).
+
+## Using the UI
+
+<VersionBadge version="5.41.0" />
+
+The Scans page imports a Prowler OCSF report from the browser, with no CLI or API key involved. The import runs as a regular ingestion job, so the [status values](#ingestion-status-values), the [billing impact](#billing-impact) and the [errors endpoint](#get-ingestion-errors) apply as they do for the CLI and the API.
+
+1. Go to **Scans** and click **Import Findings**. The button is shown only to roles with the **Manage Ingestions** permission.
+
+    ![Import Findings button on the Scans page](/images/prowler-app/import-findings/import-findings-button.png)
+
+2. Drag a `.ocsf.json` report onto the drop area, or click **Select File** to pick one. The dialog takes one file per import. A file whose name does not end in `.ocsf.json`, or an empty file, is rejected before the upload starts.
+
+    ![Import findings dialog with the drag-and-drop area](/images/prowler-app/import-findings/import-findings-dialog.png)
+
+3. Click **Start import**. The dialog uploads the report, creates the ingestion job and follows its status until the job finishes. On completion it reports the total number of records, how many were processed and how many were invalid.
+
+Closing the dialog while an import is running does not cancel the job. When the job completes in the background, a notification confirms it and the imported findings appear in Scans.
+
+If the upload is rejected or the job fails, the dialog shows the reason and a **Retry import** button that sends the same file again. A failed job also shows the progress it reported before failing. A different file can be selected instead of retrying. If the status check fails after the upload was accepted, **Retry status** resumes tracking the same job without uploading the file again.
+
+Invalid records are counted in the summary but not listed in the dialog. To see why each one was rejected, [list the ingestion jobs](#list-ingestion-jobs) through the API and query the [errors endpoint](#get-ingestion-errors) for that job.
+
+## Using the CLI
+
+The `--push-to-cloud` flag uploads scan results directly to Prowler Cloud after a scan completes. This approach automates the ingestion process without manual file uploads.
+
+### Prerequisites
+
+- A valid Prowler Cloud API key (see [API Keys](/user-guide/tutorials/prowler-app-api-keys))
+- The `PROWLER_CLOUD_API_KEY` environment variable configured
+
+### Basic Usage
+
+```bash
+export PROWLER_CLOUD_API_KEY="pk_your_api_key_here"
+
+prowler aws --push-to-cloud
+```
+
+### TLS Certificate Trust
+
+For `--push-to-cloud` uploads, Prowler CLI creates one ingestion-scoped TLS context and validates HTTPS certificates with one handshake and one POST request. The upload does not retry or fall back to another TLS configuration. Redirect responses are rejected.
+
+The ingestion context combines the operating system roots with the default certificate authority (CA) roots bundled with Requests. If `REQUESTS_CA_BUNDLE` is configured, Prowler CLI also loads that file or directory into the ingestion context. Otherwise, Prowler CLI loads `CURL_CA_BUNDLE` when configured.
+
+`REQUESTS_CA_BUNDLE` and `CURL_CA_BUNDLE` can also affect other Requests-based connections throughout the Prowler CLI process, including provider authentication. A bundle containing only a private CA can cause connections to public services to fail before the upload starts. Installing the private CA in the operating system or container trust store is recommended. If a custom bundle is required, it must include both the public CA roots, such as the certifi bundle, and the required private CA certificates.
+
+For Prowler Private Cloud deployments that use an organization CA or a TLS-intercepting corporate proxy, installing the required root CA in the operating system or container store remains the recommended approach. Containers have an isolated system CA store, so add the organization or proxy CA to the container image or runtime, then run the operating system's CA update command, such as `update-ca-certificates`, before starting Prowler CLI. Installing a CA on the container host does not automatically install it inside the container.
+
+Prowler CLI does not create, modify, or remove these environment variables. The custom TLS context created by `--push-to-cloud` applies only to the temporary ingestion session and does not change API, provider, integration, global SSL, or unrelated Requests session behavior.
+
+### Combining with Output Formats
+
+When using `--push-to-cloud` with custom output formats that exclude OCSF, Prowler generates a temporary OCSF file for upload:
+
+The temporary OCSF file is saved in the system temporary directory and not in the output path passed with `-o`.
+
+```bash
+prowler aws --services accessanalyzer -M csv --push-to-cloud -o /tmp/scan-output
+```
+
+When default output formats include OCSF, Prowler reuses the existing file. Default output formats include JSON-OCSF:
+
+```bash
+prowler aws --services accessanalyzer --push-to-cloud -o /tmp/scan-output
+```
+
+### CLI Output Examples
+
+**Successful upload:**
+```
+Pushing findings to Prowler Cloud, please wait...
+
+Findings successfully pushed to Prowler Cloud. Ingestion job: fa8bc8c5-4925-46a0-9fe0-f6575905e094
+See more details here: https://cloud.prowler.com/scans
+```
+
+**Missing API key:**
+```
+Push to Prowler Cloud skipped: no API key configured. Set the PROWLER_CLOUD_API_KEY
+environment variable to enable it. Scan results were saved to
+/tmp/scan-output/prowler-output-123456789012-20260217131755.ocsf.json
+```
+
+**API unreachable:**
+```
+Push to Prowler Cloud failed: could not reach the Prowler Cloud API at
+https://api.prowler.com. Check the URL and your network connection. Scan results
+were saved to /tmp/scan-output/prowler-output-123456789012-20260217131755.ocsf.json
+```
+
+**No subscription:**
+```
+Push to Prowler Cloud failed: this feature is only available with a Prowler Cloud
+subscription. Scan results were saved to
+/tmp/scan-output/prowler-output-123456789012-20260217131755.ocsf.json
+```
+
+**Invalid API key:**
+```
+Push to Prowler Cloud failed: the API returned HTTP 401. Verify your API key is
+valid and has the right permissions. Scan results were saved to
+/tmp/scan-output/prowler-output-123456789012-20260217131755.ocsf.json
+```
+
+<Note>
+Ingestion failures do not affect the scan exit code. The CLI emits warnings but completes normally.
+</Note>
+
+## Using the API
+
+The Ingestion API provides endpoints for submitting OCSF files and monitoring job status.
+
+### Authentication
+
+Include the API key in the `Authorization` header:
+
+```bash
+export PROWLER_CLOUD_API_KEY="pk_your_api_key_here"
+
+curl -X POST \
+  -H "Authorization: Api-Key ${PROWLER_CLOUD_API_KEY}" \
+  -F "file=@/path/to/findings.ocsf.json" \
+  https://api.prowler.com/api/v1/ingestions
+```
+
+### Submit an Ingestion Batch
+
+Upload a `.ocsf.json` file containing a JSON array of OCSF Detection Finding records. See [OCSF Detection Finding format](#ocsf-detection-finding-format) for the expected structure.
+
+**Endpoint:** `POST /api/v1/ingestions`
+
+**Request:**
+```bash
+curl -X POST \
+  -H "Authorization: Api-Key ${PROWLER_CLOUD_API_KEY}" \
+  -F "file=@scan-results.ocsf.json" \
+  https://api.prowler.com/api/v1/ingestions
+```
+
+**Response (202 Accepted):**
+```json
+{
+  "data": {
+    "type": "ingestions",
+    "id": "3650fef9-8e5f-4808-a95f-74f0afae8499",
+    "attributes": {
+      "status": "pending",
+      "summary": {
+        "total": 4,
+        "processed": 0,
+        "invalid": 0
+      },
+      "requested_at": "2026-02-17T13:16:28.644666Z",
+      "started_at": null,
+      "completed_at": null
+    }
+  },
+  "meta": {
+    "version": "v1"
+  }
+}
+```
+
+### Get Ingestion Status
+
+Monitor the progress of an ingestion job.
+
+**Endpoint:** `GET /api/v1/ingestions/{id}`
+
+**Request:**
+```bash
+curl -X GET \
+  -H "Authorization: Api-Key ${PROWLER_CLOUD_API_KEY}" \
+  -H "Accept: application/vnd.api+json" \
+  https://api.prowler.com/api/v1/ingestions/3650fef9-8e5f-4808-a95f-74f0afae8499
+```
+
+**Response (200 OK):**
+```json
+{
+  "data": {
+    "type": "ingestions",
+    "id": "3650fef9-8e5f-4808-a95f-74f0afae8499",
+    "attributes": {
+      "status": "completed",
+      "summary": {
+        "total": 4,
+        "processed": 4,
+        "invalid": 0
+      },
+      "requested_at": "2026-02-17T13:16:28.644666Z",
+      "started_at": "2026-02-17T13:16:28.793789Z",
+      "completed_at": "2026-02-17T13:16:30.192782Z"
+    }
+  },
+  "meta": {
+    "version": "v1"
+  }
+}
+```
+
+### List Ingestion Jobs
+
+Retrieve a list of ingestion jobs for the tenant.
+
+**Endpoint:** `GET /api/v1/ingestions`
+
+**Query parameters:**
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `filter[status]` | string | Filter by status: `pending`, `processing`, `completed`, `failed` |
+| `filter[status__in]` | array | Filter by multiple statuses (comma-separated) |
+| `filter[completed_at]` | date | Filter by completion date |
+| `filter[inserted_at]` | date | Filter by insertion date |
+| `filter[search]` | string | Search term |
+| `fields[ingestions]` | array | Return specific fields: `status`, `summary`, `requested_at`, `started_at`, `completed_at` |
+| `sort` | array | Sort by: `inserted_at`, `requested_at`, `started_at`, `completed_at` (prefix with `-` for descending) |
+| `page[number]` | integer | Page number |
+| `page[size]` | integer | Results per page |
+
+**Request:**
+```bash
+curl -X GET \
+  -H "Authorization: Api-Key ${PROWLER_CLOUD_API_KEY}" \
+  -H "Accept: application/vnd.api+json" \
+  "https://api.prowler.com/api/v1/ingestions?filter[status]=completed&page[size]=10"
+```
+
+### Get Ingestion Errors
+
+Retrieve error details for a specific ingestion job.
+
+**Endpoint:** `GET /api/v1/ingestions/{id}/errors`
+
+**Request:**
+```bash
+curl -X GET \
+  -H "Authorization: Api-Key ${PROWLER_CLOUD_API_KEY}" \
+  -H "Accept: application/vnd.api+json" \
+  https://api.prowler.com/api/v1/ingestions/3650fef9-8e5f-4808-a95f-74f0afae8499/errors
+```
+
+## Ingestion Status Values
+
+| Status | Description |
+|--------|-------------|
+| `pending` | Job received and queued for processing |
+| `processing` | Job is actively being processed |
+| `completed` | All records processed successfully |
+| `failed` | Job encountered errors during processing |
+
+## CI/CD Integration
+
+Automate findings ingestion in CI/CD pipelines by setting the API key as a secret.
+
+<Note>
+Prowler must be installed in the CI/CD environment before running scans. Refer to the [Prowler CLI installation guide](/getting-started/installation/prowler-cli) for setup instructions.
+</Note>
+
+### GitHub Actions
+
+<Info>
+For new projects, use the official [Prowler GitHub Action](/user-guide/tutorials/prowler-app-github-action) — a Docker-based reusable action that runs scans, optionally pushes findings to Prowler Cloud, and uploads SARIF results to GitHub Code Scanning. The example below documents the legacy pip-based flow.
+</Info>
+
+```yaml
+- name: Install Prowler
+  run: pip install prowler
+
+- name: Run Prowler and upload to Cloud
+  env:
+    PROWLER_CLOUD_API_KEY: ${{ secrets.PROWLER_CLOUD_API_KEY }}
+  run: |
+    prowler aws --services s3,iam --push-to-cloud
+```
+
+### GitLab CI
+
+```yaml
+prowler_scan:
+  script:
+    - pip install prowler
+    - prowler aws --services s3,iam --push-to-cloud
+  variables:
+    PROWLER_CLOUD_API_KEY: $PROWLER_CLOUD_API_KEY
+```
+
+## Billing Impact
+
+Each unique cloud account discovered in ingested OCSF findings counts as one **provider** in the Prowler Cloud subscription.
+
+- **Existing providers**: If a cloud account was already connected as a provider, findings ingested for that account do **not** incur additional billing. The existing provider is reused.
+- **New accounts**: Ingesting findings from accounts not yet connected to Prowler Cloud will result in new providers being created and counted toward the subscription.
+- **High-volume ingestion**: Importing findings from many different cloud accounts will create a provider for each account. Review plan limits before large-scale ingestion.
+- **Deleted providers**: Removing a provider no longer counts toward the subscription.
+
+For pricing details, see [Prowler Cloud Pricing](https://prowler.com/pricing).
+
+## Troubleshooting
+
+### "Push to Prowler Cloud skipped: no API key configured"
+
+- Set the `PROWLER_CLOUD_API_KEY` environment variable before running the scan
+- Verify the variable is exported and not empty
+
+### "Push to Prowler Cloud failed: could not reach the Prowler Cloud API"
+
+- Verify network connectivity to `api.prowler.com`
+- Check firewall rules allow outbound HTTPS traffic
+- Confirm the API endpoint is not blocked by proxy settings
+- If using a custom base URL via `PROWLER_CLOUD_API_BASE_URL`, verify it is correct
+
+### "Push to Prowler Cloud failed: this feature is only available with a Prowler Cloud subscription"
+
+- The API returned HTTP 402, meaning your tenant does not have an active subscription
+- Visit [Prowler Cloud Pricing](https://prowler.com/pricing) to review available plans
+
+### HTTP 401 Unauthorized
+
+- Verify the API key is valid and not revoked
+- Confirm the API key has the **Manage Ingestions** permission
+- Check that the `Authorization` header uses the correct format: `Api-Key <key>`
+
+### HTTP 403 Forbidden
+
+- The user associated with the API key lacks the **Manage Ingestions** permission
+- Contact the tenant administrator to grant the required permission
+
+### Ingestion Job Status Is "failed"
+
+- Check the `/api/v1/ingestions/{id}/errors` endpoint for details
+- Verify the OCSF file format is valid
+- Ensure the file contains Detection Finding records
