@@ -1,0 +1,24 @@
+component_management:
+  individual_components:
+    - component_id: "prowler"
+      paths:
+        - "prowler/**"
+    - component_id: "api"
+      paths:
+        - "api/**"
+    - component_id: "mcp_server"
+      paths:
+        - "mcp_server/**"
+
+flags:
+  api:
+    paths:
+      - "api/**"
+    carryforward: true
+  mcp:
+    paths:
+      - "mcp_server/**"
+    carryforward: true
+
+comment:
+  layout: "header, diff, flags, components"
