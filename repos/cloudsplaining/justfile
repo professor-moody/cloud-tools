@@ -1,0 +1,77 @@
+default:
+    @just --list
+
+[group('docs')]
+build-docs:
+    mkdocs build
+
+[group('js')]
+build-js: clean-js install-js
+    uv run ./utils/generate_example_iam_data.py
+    npm run build
+
+[group('package')]
+build-package: clean
+    uv build
+
+[group('package')]
+clean:
+    rm -rf dist/
+    rm -rf *.egg-info
+
+[group('js')]
+clean-js:
+    rm -rf node_modules/
+    npm cache clear --force
+
+[group('js')]
+generate-report:
+    uv run ./utils/generate_example_iam_data.py
+    uv run ./utils/generate_example_report.py
+
+[group('js')]
+install-js:
+    npm ci
+
+[group('docs')]
+serve-docs:
+    mkdocs serve --dev-addr "127.0.0.1:8001"
+
+[group('js')]
+serve-js: install-js
+    npm run serve
+
+[group('js')]
+test-js: install-js
+    npm test
+
+[group('test')]
+type-check:
+    uv run ty check
+
+# Run CI's format/lint hooks (ruff-format, ruff-check, just fmt, actionlint); auto-fixes in place.
+[group('test')]
+lint:
+    uvx pre-commit run --all-files
+
+# Full local gate mirroring CI. Run before every push to avoid format/test failures.
+[group('test')]
+pre-push: lint unit-tests type-check test-js safety-scan
+
+[group('test')]
+unit-tests:
+    uv run coverage run -m pytest -v
+    uv run coverage report -m
+
+[group('test')]
+safety-scan:
+    uv run ./utils/safety_scan.py
+
+[group('test')]
+compare-reports old new:
+    uv run ./utils/compare_example_reports.py --old {{ old }} --new {{ new }}
+
+# Fail if sampleData.js and utils/example-iam-data.json have drifted apart.
+[group('test')]
+check-sampledata-sync:
+    uv run pytest test/test_sample_data_in_sync.py -q
