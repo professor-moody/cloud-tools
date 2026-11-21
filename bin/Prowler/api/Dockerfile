@@ -1,0 +1,193 @@
+FROM python:3.12.16-slim-trixie@sha256:8523d6abeb48ceae0b7240d30c5808fc26cb79c1a635bacdf19cf3baecfbec07 AS build
+
+LABEL maintainer="https://github.com/prowler-cloud/api"
+
+ARG POWERSHELL_VERSION=7.6.10
+ENV POWERSHELL_VERSION=${POWERSHELL_VERSION}
+# Opt out of PowerShell telemetry (Application Insights -> dc.services.visualstudio.com)
+ENV POWERSHELL_TELEMETRY_OPTOUT=1
+
+ARG TRIVY_VERSION=0.76.2
+ENV TRIVY_VERSION=${TRIVY_VERSION}
+
+ARG ZIZMOR_VERSION=1.24.1
+ENV ZIZMOR_VERSION=${ZIZMOR_VERSION}
+
+# Pinned here, not fetched with the artefact: a compromised release ships its own checksum.
+ARG TRIVY_SHA256_AMD64=bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf
+ARG TRIVY_SHA256_ARM64=ab9d51f86e6a5fb936f605faff6b593ac51bc378fff4d3e8b9d58358b9c367c3
+ARG POWERSHELL_SHA256_AMD64=e261cabc91c78a9afe8d1e5f24731ab0d38204735ab2ec94b0af55102652e10d
+ARG POWERSHELL_SHA256_ARM64=439432cdecf4418413b9a8f547e3ab4d9b40e8e4258913ec3d15fc92c67a9235
+ARG ZIZMOR_SHA256_AMD64=a8000f3c683319a523d3b20df0e75457ba591f049cfcbfa98966631b56733c03
+ARG ZIZMOR_SHA256_ARM64=d66e37ef8a375fb07939c630ebf9709a6e0f20242bdc3faf672a7ed97e0b768d
+
+# High CVEs fixed in Debian trixie but not yet in the pinned base image:
+#   openssl/libssl3t64/openssl-provider-legacy 3.5.7-1~deb13u2  CVE-2026-14456,
+#   -14457, -18798, -54874, -63072, -63073, -63074, -63075, -63076, -75803
+#   libsqlite3-0 3.46.1-7+deb13u2  CVE-2026-11822, -11824
+#   gzip 1.13-1+deb13u1  CVE-2026-41992
+#   perl-base 5.40.1-6+deb13u1  CVE-2026-42497, -48962, -57432
+#   libssh2-1t64 1.11.1-1+deb13u2  CVE-2026-58050
+#   libpcre2-8-0 10.46-1~deb13u2  CVE-2026-86145, -89161
+#   apt/libapt-pkg7.0 3.0.4  CVE-2026-109518
+#   zlib1g 1:1.3.dfsg+really1.3.1-1+deb13u1  CVE-2026-76844, -85091
+# Taken as a targeted --only-upgrade rather than by moving the digest: the newest
+# published python:3.12-slim-trixie carries the same vulnerable versions. The three
+# openssl packages are flagged separately, so all are named.
+# Drop each one once the base image ships its fixed version.
+# --error-on=any: a transient fetch failure would otherwise skip these upgrades silently.
+# hadolint ignore=DL3008
+RUN apt-get update --error-on=any && apt-get install -y --no-install-recommends \
+    wget \
+    git \
+    libicu76 \
+    gcc \
+    g++ \
+    make \
+    libxml2-dev \
+    libxmlsec1-dev \
+    libxmlsec1-openssl \
+    pkg-config \
+    libtool \
+    libxslt1-dev \
+    python3-dev \
+    && apt-get install -y --no-install-recommends --only-upgrade \
+       util-linux libssl3t64 openssl openssl-provider-legacy \
+       libsqlite3-0 gzip perl-base libssh2-1t64 libpcre2-8-0 \
+       apt libapt-pkg7.0 zlib1g \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install PowerShell
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "x86_64" ]; then \
+        wget --progress=dot:giga https://github.com/PowerShell/PowerShell/releases/download/v${POWERSHELL_VERSION}/powershell-${POWERSHELL_VERSION}-linux-x64.tar.gz -O /tmp/powershell.tar.gz ; \
+    elif [ "$ARCH" = "aarch64" ]; then \
+        wget --progress=dot:giga https://github.com/PowerShell/PowerShell/releases/download/v${POWERSHELL_VERSION}/powershell-${POWERSHELL_VERSION}-linux-arm64.tar.gz -O /tmp/powershell.tar.gz ; \
+    else \
+        echo "Unsupported architecture: $ARCH" && exit 1 ; \
+    fi && \
+    if [ "$ARCH" = "x86_64" ]; then EXPECT="$POWERSHELL_SHA256_AMD64" ; else EXPECT="$POWERSHELL_SHA256_ARM64" ; fi && \
+    echo "$EXPECT  /tmp/powershell.tar.gz" > /tmp/powershell.sha256 && \
+    sha256sum -c /tmp/powershell.sha256 && rm /tmp/powershell.sha256 && \
+    mkdir -p /opt/microsoft/powershell/7 && \
+    tar zxf /tmp/powershell.tar.gz -C /opt/microsoft/powershell/7 && \
+    chmod +x /opt/microsoft/powershell/7/pwsh && \
+    ln -s /opt/microsoft/powershell/7/pwsh /usr/bin/pwsh && \
+    rm /tmp/powershell.tar.gz
+
+# Install Trivy for IaC scanning
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "x86_64" ]; then \
+        TRIVY_ARCH="Linux-64bit" ; \
+    elif [ "$ARCH" = "aarch64" ]; then \
+        TRIVY_ARCH="Linux-ARM64" ; \
+    else \
+        echo "Unsupported architecture for Trivy: $ARCH" && exit 1 ; \
+    fi && \
+    wget --progress=dot:giga "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_${TRIVY_ARCH}.tar.gz" -O /tmp/trivy.tar.gz && \
+    if [ "$ARCH" = "x86_64" ]; then EXPECT="$TRIVY_SHA256_AMD64" ; else EXPECT="$TRIVY_SHA256_ARM64" ; fi && \
+    echo "$EXPECT  /tmp/trivy.tar.gz" > /tmp/trivy.sha256 && \
+    sha256sum -c /tmp/trivy.sha256 && rm /tmp/trivy.sha256 && \
+    tar zxf /tmp/trivy.tar.gz -C /tmp && \
+    mv /tmp/trivy /usr/local/bin/trivy && \
+    chmod +x /usr/local/bin/trivy && \
+    rm /tmp/trivy.tar.gz && \
+    # Create trivy cache directory with proper permissions
+    mkdir -p /tmp/.cache/trivy && \
+    chmod 777 /tmp/.cache/trivy
+
+# Install zizmor for GitHub Actions workflow scanning
+RUN ARCH=$(uname -m) && \
+    if [ "$ARCH" = "x86_64" ]; then \
+        ZIZMOR_ARCH="x86_64-unknown-linux-gnu" ; \
+    elif [ "$ARCH" = "aarch64" ]; then \
+        ZIZMOR_ARCH="aarch64-unknown-linux-gnu" ; \
+    else \
+        echo "Unsupported architecture for zizmor: $ARCH" && exit 1 ; \
+    fi && \
+    wget --progress=dot:giga "https://github.com/zizmorcore/zizmor/releases/download/v${ZIZMOR_VERSION}/zizmor-${ZIZMOR_ARCH}.tar.gz" -O /tmp/zizmor.tar.gz && \
+    if [ "$ARCH" = "x86_64" ]; then EXPECT="$ZIZMOR_SHA256_AMD64" ; else EXPECT="$ZIZMOR_SHA256_ARM64" ; fi && \
+    echo "$EXPECT  /tmp/zizmor.tar.gz" > /tmp/zizmor.sha256 && \
+    sha256sum -c /tmp/zizmor.sha256 && rm /tmp/zizmor.sha256 && \
+    mkdir -p /tmp/zizmor-extract && \
+    tar zxf /tmp/zizmor.tar.gz -C /tmp/zizmor-extract && \
+    mv /tmp/zizmor-extract/zizmor /usr/local/bin/zizmor && \
+    chmod +x /usr/local/bin/zizmor && \
+    rm -rf /tmp/zizmor.tar.gz /tmp/zizmor-extract
+
+# Add prowler user
+RUN addgroup --gid 1000 prowler && \
+    adduser --uid 1000 --gid 1000 --disabled-password --gecos "" prowler
+
+# Numeric UID (1000 = prowler) so runAsNonRoot can verify it; no :GID, so groups still come from /etc/group.
+USER 1000
+
+WORKDIR /home/prowler
+
+# Ensure output directory exists
+RUN mkdir -p /tmp/prowler_api_output
+
+COPY --chown=prowler:prowler pyproject.toml uv.lock ./
+
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir uv==0.13.7
+
+ENV PATH="/home/prowler/.local/bin:$PATH"
+
+# Add `--no-install-project` to avoid installing the current project as a package
+RUN uv sync --locked --no-install-project && \
+    rm -rf ~/.cache/uv
+
+# Invoked as a module so the base image's Python minor version is not baked
+# into a site-packages path. Drop the MicrosoftTeams build SBOM: Trivy reports the npm
+# tooling it declares as installed, though none ships (see .trivyignore.yaml).
+RUN .venv/bin/python -m prowler.providers.m365.lib.powershell.m365_powershell && \
+    rm -rf /home/prowler/.local/share/powershell/Modules/MicrosoftTeams/*/_manifest
+
+USER 0
+
+# Remove build-only packages from the final image after Python dependencies are installed.
+# git is only needed by uv sync for the `prowler @ git+...` dependency; purging it drops perl too.
+# wget stays: the compose healthcheck shells out to it.
+RUN apt-get purge -y --auto-remove \
+    gcc \
+    g++ \
+    git \
+    make \
+    libxml2-dev \
+    libxmlsec1-dev \
+    libxmlsec1-openssl \
+    libxmlsec1t64 \
+    libxmlsec1t64-openssl \
+    pkg-config \
+    libtool \
+    libxslt1-dev \
+    python3-dev \
+    gnupg \
+    apt-transport-https \
+    && rm -rf /var/lib/apt/lists/*
+
+# pip is build-only; the entrypoint runs uv against the prepared venv. uv stays.
+RUN rm -rf /usr/local/lib/python3.12/site-packages/pip \
+    /usr/local/lib/python3.12/site-packages/pip-*.dist-info \
+    /home/prowler/.local/lib/python3.12/site-packages/pip \
+    /home/prowler/.local/lib/python3.12/site-packages/pip-*.dist-info \
+    /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.12 \
+    /home/prowler/.local/bin/pip /home/prowler/.local/bin/pip3 /home/prowler/.local/bin/pip3.12
+
+USER 1000
+
+COPY --chown=prowler:prowler src/backend/ ./backend/
+COPY --chown=prowler:prowler docker-entrypoint.sh ./docker-entrypoint.sh
+
+WORKDIR /home/prowler/backend
+
+# Development image
+FROM build AS dev
+
+ENTRYPOINT ["../docker-entrypoint.sh", "dev"]
+
+# Production image
+FROM build
+
+ENTRYPOINT ["../docker-entrypoint.sh", "prod"]

@@ -1,0 +1,69 @@
+# =============================================================================
+# Build stage - Install dependencies and build the application
+# =============================================================================
+FROM ghcr.io/astral-sh/uv:0.11.21-python3.13-alpine3.23@sha256:f09cc61ffc001f202701fdeae14dbdd50f6ca4cfcf248f41fd3234a302c8534f AS builder
+
+WORKDIR /app
+
+# Performance optimizations for uv:
+# UV_COMPILE_BYTECODE=1: Pre-compile Python files to .pyc for faster startup
+# UV_LINK_MODE=copy: Use copy instead of symlinks to avoid potential issues
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
+
+# Install dependencies first for better Docker layer caching
+# This allows dependency layer to be reused when only source code changes
+COPY uv.lock pyproject.toml ./
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project
+
+# Copy all source code and install the project
+# --frozen ensures reproducible builds by using exact versions from uv.lock
+COPY . .
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen
+
+# =============================================================================
+# Final stage - Minimal runtime environment
+# =============================================================================
+FROM python:3.13.18-alpine3.23@sha256:e4aeaca9081549f19bd5bc8605ed5ab257ba34f97e0471f8e09161f45b4b08b8
+
+LABEL maintainer="https://github.com/prowler-cloud"
+
+# Targeted exception: zlib 1.4-r0 fixes critical CVE-2026-4738, but even the newest
+# python:3.13.18-alpine3.23 still ships 1.3.2-r1. Drop once the base image ships it.
+#hadolint ignore=DL3018
+RUN apk add --no-cache --upgrade 'zlib>=1.4-r0'
+
+# Create non-root user for security
+# Using specific UID/GID for consistency across environments
+RUN addgroup -g 1001 prowler && \
+    adduser -D -u 1001 -G prowler prowler
+
+# pip is build-only; the entrypoint runs the venv directly.
+RUN rm -rf /usr/local/lib/python3.13/site-packages/pip \
+    /usr/local/lib/python3.13/site-packages/pip-*.dist-info \
+    /usr/local/bin/pip /usr/local/bin/pip3 /usr/local/bin/pip3.13
+
+WORKDIR /app
+# Numeric UID (1001 = prowler) so runAsNonRoot can verify it; no :GID, so groups still come from /etc/group.
+USER 1001
+
+# Copy only the necessary files from builder stage to minimize image size:
+# 1. Virtual environment with all dependencies and the installed package
+COPY --from=builder --chown=prowler /app/.venv /app/.venv
+
+# 2. Source code needed at runtime (for imports and module resolution)
+COPY --from=builder --chown=prowler /app/prowler_mcp_server /app/prowler_mcp_server
+
+# 3. Project metadata file (may be needed by some packages at runtime)
+COPY --from=builder --chown=prowler /app/pyproject.toml /app/pyproject.toml
+
+# 4. Entrypoint helper script for selecting runtime mode
+COPY --from=builder --chown=prowler /app/entrypoint.sh /app/entrypoint.sh
+
+# Add virtual environment to PATH so prowler-mcp command is available
+ENV PATH="/app/.venv/bin:$PATH"
+
+# Entrypoint wrapper defaults to CLI mode; override with `uvicorn` to run ASGI app
+ENTRYPOINT ["/app/entrypoint.sh"]
+CMD ["main"]

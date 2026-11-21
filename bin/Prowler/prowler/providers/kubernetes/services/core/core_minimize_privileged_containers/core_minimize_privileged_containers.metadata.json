@@ -1,0 +1,40 @@
+{
+  "Provider": "kubernetes",
+  "CheckID": "core_minimize_privileged_containers",
+  "CheckTitle": "Pod does not contain a privileged container",
+  "CheckType": [],
+  "ServiceName": "core",
+  "SubServiceName": "",
+  "ResourceIdTemplate": "",
+  "Severity": "high",
+  "ResourceType": "Pod",
+  "ResourceGroup": "container",
+  "Description": "**Kubernetes Pods** are evaluated for regular, init, and ephemeral containers configured with `securityContext.privileged: true`.",
+  "Risk": "**Privileged containers** can control the host and bypass isolation, enabling:\n- Secret theft (confidentiality)\n- Workload/node tampering (integrity)\n- Service disruption (availability)\nCompromise of one pod can drive lateral movement across the cluster.",
+  "RelatedUrl": "",
+  "AdditionalURLs": [
+    "https://kubernetes.io/docs/tasks/configure-pod-container/security-context/",
+    "https://kubernetes.io/docs/tasks/configure-pod-container/enforce-standards-admission-controller/",
+    "https://kubernetes.io/docs/setup/best-practices/enforcing-pod-security-standards/",
+    "https://kubernetes.io/docs/concepts/security/pod-security-standards/",
+    "https://kubernetes.io/docs/concepts/workloads/pods/ephemeral-containers/"
+  ],
+  "Remediation": {
+    "Code": {
+      "CLI": "",
+      "NativeIaC": "",
+      "Other": "1. For a regular or init container, open the owning workload's Pod template or the standalone Pod manifest.\n2. Set `securityContext.privileged: false` in the affected `containers` or `initContainers` entry. Roll out the workload or recreate the standalone Pod to apply the change.\n3. For an ephemeral container, plan a safe Pod replacement. An ephemeral container's security context is immutable once it has been added. Configure future ephemeral containers without privileged mode.",
+      "Terraform": "```hcl\nresource \"kubernetes_pod\" \"<example_resource_name>\" {\n  metadata { name = \"<example_resource_name>\" }\n  spec {\n    container {\n      name  = \"<example_resource_name>\"\n      image = \"<IMAGE>\"\n      security_context {\n        privileged = false # Critical: disables privileged mode to pass the check\n      }\n    }\n  }\n}\n```"
+    },
+    "Recommendation": {
+      "Text": "Block `privileged: true` using **Pod Security Admission** at `restricted`. Apply **least privilege**:\n- Run unprivileged; set `allowPrivilegeEscalation: false`\n- Drop capabilities; avoid host access\n- Restrict who can deploy privileged pods with **RBAC**\n- Use short-lived, audited exceptions only when strictly required",
+      "Url": "https://hub.prowler.com/check/core_minimize_privileged_containers"
+    }
+  },
+  "Categories": [
+    "container-security"
+  ],
+  "DependsOn": [],
+  "RelatedTo": [],
+  "Notes": "Exceptions for privileged containers should be clearly defined and monitored."
+}
